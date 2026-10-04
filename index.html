@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>bank.ide.konten — V9.1 AI Factory</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><b>bank.ide.konten</b><span>V9.1 AI</span></header>
+<main>
+<section class="hero"><small>AI CONTENT FACTORY</small><h1>Mesin Produksi Online</h1><p>Data disimpan di database Cloudflare D1 dan script/visual dapat dibuat dengan Gemini API melalui backend.</p></section>
+
+<section class="card">
+<h2>🎯 Konten Baru</h2>
+<label>Judul / Ide</label><input id="title" placeholder="Contoh: 3 kesalahan pemula saat jualan hijab">
+<label>Niche</label><input id="niche" placeholder="Contoh: Jualan hijab">
+<label>Target Audiens</label><input id="audience" placeholder="Contoh: Wanita usia 15–40 tahun">
+<label>Tujuan</label><select id="goal"><option>Edukasi</option><option>Engagement</option><option>Soft Selling</option><option>Hard Selling</option><option>Personal Branding</option></select>
+<div class="grid"><button id="scriptBtn">🤖 GENERATE SCRIPT</button><button id="visualBtn">🎬 GENERATE VISUAL</button></div>
+<label>Script</label><textarea id="script" placeholder="Hasil AI script akan muncul di sini"></textarea>
+<label>Visual Prompt</label><textarea id="visual" placeholder="Hasil AI visual prompt akan muncul di sini"></textarea>
+<button class="primary" id="save">☁️ SIMPAN KE DATABASE</button>
+<div id="msg" class="msg"></div>
+</section>
+
+<section class="toolbar"><h2>🏭 Production Queue Online</h2><button id="refresh" class="small">REFRESH</button></section>
+<div id="list"></div>
+
+<section class="card note"><b>V9.1 status:</b><br>Database online + AI backend. Login/multi-user dan scheduler posting belum diaktifkan.</section>
+</main>
+<footer>bank.ide.konten • V9.1 • AI + D1</footer>
+<script src="app.js"></script>
+</body>
+</html>
