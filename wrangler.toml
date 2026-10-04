@@ -10,3 +10,5 @@ run_worker_first = ["/api/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "bank-ide-konten-v91"
+database_id = "254e1ecb-f0bf-46e0-bf9b-8b55d54f7b17"
+
