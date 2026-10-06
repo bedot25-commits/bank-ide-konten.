@@ -16,6 +16,20 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
+    // 0. PRODUCTION QUEUE ONLINE (Mencegah Error Antrean)
+    if (url.pathname === "/api/queue" && request.method === "GET") {
+      try {
+        // Mengambil data antrean dari database jika ada, atau kembalikan array kosong
+        const { results } = await env.DB.prepare(
+          "SELECT * FROM production_queue ORDER BY id DESC LIMIT 10"
+        ).all().catch(() => ({ results: [] }));
+
+        return Response.json(results || [], { headers: corsHeaders });
+      } catch (err) {
+        return Response.json([], { headers: corsHeaders });
+      }
+    }
+
     // 1. CHECK QUOTA & PRO STATUS
     if (url.pathname === "/api/check-quota" && request.method === "GET") {
       try {
@@ -40,7 +54,6 @@ export default {
           if (usage.last_date === today) {
             count = usage.usage_count;
           } else {
-            // Reset for new day
             await env.DB.prepare(
               "UPDATE user_usage SET usage_count = 0, last_date = ? WHERE client_id = ?"
             ).bind(today, clientId).run();
@@ -62,7 +75,6 @@ export default {
           return Response.json({ success: false, message: "Token tidak boleh kosong!" }, { headers: corsHeaders });
         }
 
-        // Find token in database
         const tokenData = await env.DB.prepare(
           "SELECT * FROM pro_tokens WHERE token = ? AND is_active = 1"
         ).bind(token.trim()).first();
@@ -71,12 +83,10 @@ export default {
           return Response.json({ success: false, message: "Token tidak valid atau tidak aktif!" }, { headers: corsHeaders });
         }
 
-        // Check if token is already bound to another device
         if (tokenData.bound_device_id && tokenData.bound_device_id !== clientId) {
           return Response.json({ success: false, message: "Token sudah digunakan di perangkat lain!" }, { headers: corsHeaders });
         }
 
-        // Bind token to this device if not bound yet
         if (!tokenData.bound_device_id) {
           await env.DB.prepare(
             "UPDATE pro_tokens SET bound_device_id = ? WHERE token = ?"
@@ -94,13 +104,11 @@ export default {
       try {
         const today = new Date().toISOString().split('T')[0];
 
-        // Verify Pro status
         const tokenCheck = await env.DB.prepare(
           "SELECT token FROM pro_tokens WHERE bound_device_id = ? AND is_active = 1"
         ).bind(clientId).first();
 
         if (!tokenCheck) {
-          // Check quota limit (max 5)
           let usage = await env.DB.prepare(
             "SELECT * FROM user_usage WHERE client_id = ?"
           ).bind(clientId).first();
@@ -123,7 +131,6 @@ export default {
         const body = await request.json();
         const prompt = `Buatkan script video pendek dan visual prompt untuk judul: "${body.title}", niche: "${body.niche}", audiens: "${body.audience}", tujuan: "${body.goal}". Format dengan jelas bagian Script dan Visual Prompt.`;
 
-        // Call Gemini API
         const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${env.GEMINI_API_KEY}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -133,7 +140,6 @@ export default {
         const geminiData = await geminiRes.json();
         const textResult = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "Gagal menghasilkan konten.";
 
-        // Increment quota if not pro
         if (!tokenCheck) {
           let usage = await env.DB.prepare(
             "SELECT * FROM user_usage WHERE client_id = ?"
