@@ -3,7 +3,7 @@ export default {
     const url = new URL(request.url);
     const clientIp = request.headers.get("cf-connecting-ip") || "anonymous";
     const userAgent = request.headers.get("user-agent") || "unknown";
-    const clientId = btoa(clientIp + userAgent).substring(0, 32); // Unique Device ID
+    const clientId = btoa(clientIp + userAgent).substring(0, 32);
 
     // CORS Headers
     const corsHeaders = {
@@ -149,6 +149,23 @@ export default {
         return Response.json({ result: textResult }, { headers: corsHeaders });
       } catch (err) {
         return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // 4. SAVE CONTENT TO DATABASE
+    if (url.pathname === "/api/save" && request.method === "POST") {
+      try {
+        const body = await request.json();
+        const { title, content } = body;
+        const today = new Date().toISOString().split('T')[0];
+
+        await env.DB.prepare(
+          "INSERT INTO saved_content (title, content, created_at) VALUES (?, ?, ?)"
+        ).bind(title || "Tanpa Judul", content || "", today).run();
+
+        return Response.json({ success: true, message: "Data berhasil disimpan!" }, { headers: corsHeaders });
+      } catch (err) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
       }
     }
 
