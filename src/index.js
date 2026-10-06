@@ -1,53 +1,140 @@
-const cors = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS"
-};
-
-function json(data,status=200){return new Response(JSON.stringify(data),{status,headers:{"Content-Type":"application/json",...cors}})}
-function clean(v,max=12000){return String(v??"").trim().slice(0,max)}
-
-async function gemini(prompt, env){
-  if(!env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY belum dipasang di Worker Secrets.");
-  const url="https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
-  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":env.GEMINI_API_KEY},body:JSON.stringify({contents:[{parts:[{text:prompt}]}]})});
-  const d=await r.json();
-  if(!r.ok) throw new Error(d?.error?.message||"Gemini API gagal.");
-  return d?.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"";
-}
-
 export default {
- async fetch(request,env){
-  if(request.method==="OPTIONS") return new Response(null,{headers:cors});
-  const u=new URL(request.url);
-  try{
-   if(u.pathname==="/api/health") return json({ok:true,ai:!!env.GEMINI_API_KEY,database:!!env.DB});
-   if(u.pathname==="/api/contents"&&request.method==="GET"){
-    const {results}=await env.DB.prepare("SELECT * FROM contents ORDER BY id DESC LIMIT 100").all();
-    return json({items:results});
-   }
-   if(u.pathname==="/api/contents"&&request.method==="POST"){
-    const b=await request.json();
-    const r=await env.DB.prepare("INSERT INTO contents(title,niche,audience,goal,script,visual,stage,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
-      .bind(clean(b.title,300),clean(b.niche,200),clean(b.audience,300),clean(b.goal,80),clean(b.script),clean(b.visual),["IDE","SCRIPT","VISUAL","PRODUKSI","SELESAI"].includes(b.stage)?b.stage:"IDE",Date.now(),Date.now()).run();
-    return json({ok:true,id:r.meta.last_row_id},201);
-   }
-   if(u.pathname.startsWith("/api/contents/")){
-    const id=Number(u.pathname.split("/").pop()); if(!Number.isInteger(id)) return json({error:"ID tidak valid"},400);
-    if(request.method==="PATCH"){const b=await request.json();const allowed=["IDE","SCRIPT","VISUAL","PRODUKSI","SELESAI"];if(!allowed.includes(b.stage))return json({error:"Stage tidak valid"},400);await env.DB.prepare("UPDATE contents SET stage=?,updated_at=? WHERE id=?").bind(b.stage,Date.now(),id).run();return json({ok:true})}
-    if(request.method==="DELETE"){await env.DB.prepare("DELETE FROM contents WHERE id=?").bind(id).run();return json({ok:true})}
-   }
-   if(u.pathname==="/api/generate"&&request.method==="POST"){
-    const b=await request.json(),type=b.type,title=clean(b.title,300),niche=clean(b.niche,200),audience=clean(b.audience,300),goal=clean(b.goal,80);
-    if(!title)return json({error:"Judul wajib diisi"},400);
-    let prompt="";
-    if(type==="script") prompt=`Kamu adalah scriptwriter Shorts berbahasa Indonesia. Buat script singkat untuk judul "${title}". Niche: ${niche}. Target: ${audience}. Tujuan: ${goal}. Struktur: HOOK, OPENING, VALUE, CTA. Gaya natural, jelas, tidak bertele-tele. Jangan beri penjelasan tambahan, hanya script siap rekam.`;
-    else if(type==="visual") prompt=`Kamu adalah creative director video pendek. Buat visual/video prompt berbahasa Indonesia untuk judul "${title}". Niche: ${niche}. Target: ${audience}. Tujuan: ${goal}. Buat arahan 5 scene untuk video vertikal 9:16: subject, lokasi, aksi, camera, lighting, mood, B-roll. Konsisten karakter dan wardrobe. Jangan membuat teks acak di footage.`;
-    else return json({error:"Type AI tidak dikenal"},400);
-    const out=await gemini(prompt,env);
-    return json(type==="script"?{script:out}:{visual:out});
-   }
-   return env.ASSETS.fetch(request);
-  }catch(e){return json({error:e.message||"Server error"},500)}
- }
-}
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // CORS headers
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    };
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
+
+    // 1. ENDPOINT: GET /api/contents (Mengambil antrean konten)
+    if (url.pathname === "/api/contents" && request.method === "GET") {
+      try {
+        const { results } = await env.DB.prepare(
+          "SELECT * FROM contents ORDER BY updated_at DESC"
+        ).all();
+        return Response.json(results, { headers: corsHeaders });
+      } catch (err) {
+        return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // 2. ENDPOINT: POST /api/generate (Generate AI + Sistem Kuota 5x / Hari + Token Pro)
+    if (url.pathname === "/api/generate" && request.method === "POST") {
+      try {
+        const body = await request.json();
+        const { title, niche, audience, goal, clientId, proToken } = body;
+
+        // Cek apakah menggunakan Token Pro yang valid
+        let isPro = false;
+        if (proToken) {
+          const tokenCheck = await env.DB.prepare(
+            "SELECT * FROM pro_tokens WHERE token = ? AND is_active = 1"
+          ).bind(proToken).first();
+          if (tokenCheck) {
+            isPro = true;
+          }
+        }
+
+        // Jika bukan Pro, jalankan sistem kuota harian (5x / hari)
+        const todayStr = new Date().toISOString().split('T')[0];
+        if (!isPro) {
+          if (!clientId) {
+            return Response.json({ error: "Client ID tidak ditemukan." }, { status: 400, headers: corsHeaders });
+          }
+
+          // Cek data usage client ini
+          let usage = await env.DB.prepare(
+            "SELECT * FROM user_usage WHERE client_id = ?"
+          ).bind(clientId).first();
+
+          if (!usage) {
+            // Belum ada, buat baru
+            await env.DB.prepare(
+              "INSERT INTO user_usage (client_id, usage_count, last_date) VALUES (?, 0, ?)"
+            ).bind(clientId, todayStr).run();
+            usage = { usage_count: 0, last_date: todayStr };
+          }
+
+          // Jika sudah ganti hari, reset hitungan jadi 0
+          if (usage.last_date !== todayStr) {
+            await env.DB.prepare(
+              "UPDATE user_usage SET usage_count = 0, last_date = ? WHERE client_id = ?"
+            ).bind(todayStr, clientId).run();
+            usage.usage_count = 0;
+          }
+
+          // Batasi maksimal 5 kali sehari
+          if (usage.usage_count >= 5) {
+            return Response.json({ 
+              error: "QUOTA_EXCEEDED", 
+              message: "Jatah 5 ide gratis hari ini sudah habis! Masukkan Token Pro atau tunggu besok." 
+            }, { status: 429, headers: corsHeaders });
+          }
+        }
+
+        // Panggil Gemini API untuk generate script & visual prompt
+        const geminiApiKey = env.GEMINI_API_KEY;
+        if (!geminiApiKey) {
+          return Response.json({ error: "Gemini API key belum diset di Cloudflare Worker." }, { status: 500, headers: corsHeaders });
+        }
+
+        const promptText = `Buatkan draf script video pendek (TikTok/Reels) dan visual prompt berdasarkan data berikut:
+Judul/Topik: ${title}
+Niche: ${niche}
+Target Audiens: ${audience}
+Tujuan Konten: ${goal}
+
+Format output JSON murni tanpa markdown lain:
+{
+  "script": "isi naskah video...",
+  "visual": "deskripsi visual prompt..."
+}`;
+
+        const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: promptText }] }]
+          })
+        });
+
+        const geminiData = await geminiRes.json();
+        const rawText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+        
+        // Bersihkan format markdown json jika ada
+        const cleanJsonStr = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
+        let parsedResult;
+        try {
+          parsedResult = JSON.parse(cleanJsonStr);
+        } catch (e) {
+          parsedResult = { script: rawText, visual: "Gagal parsing format visual." };
+        }
+
+        // Jika bukan Pro, tambahkan kuota pemakaian harian setelah sukses generate
+        if (!isPro && clientId) {
+          await env.DB.prepare(
+            "UPDATE user_usage SET usage_count = usage_count + 1 WHERE client_id = ?"
+          ).bind(clientId).run();
+        }
+
+        return Response.json({
+          script: parsedResult.script,
+          visual: parsedResult.visual,
+          isPro: isPro
+        }, { headers: corsHeaders });
+
+      } catch (err) {
+        return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    return new Response("Not Found", { status: 404, headers: corsHeaders });
+  }
+};
