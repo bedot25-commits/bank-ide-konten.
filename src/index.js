@@ -16,26 +16,11 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // 0. PRODUCTION QUEUE ONLINE (Mencegah Error Antrean)
-    if (url.pathname === "/api/queue" && request.method === "GET") {
-      try {
-        // Mengambil data antrean dari database jika ada, atau kembalikan array kosong
-        const { results } = await env.DB.prepare(
-          "SELECT * FROM production_queue ORDER BY id DESC LIMIT 10"
-        ).all().catch(() => ({ results: [] }));
-
-        return Response.json(results || [], { headers: corsHeaders });
-      } catch (err) {
-        return Response.json([], { headers: corsHeaders });
-      }
-    }
-
     // 1. CHECK QUOTA & PRO STATUS
     if (url.pathname === "/api/check-quota" && request.method === "GET") {
       try {
         const today = new Date().toISOString().split('T')[0];
         
-        // Check if device has active pro token bound
         const tokenCheck = await env.DB.prepare(
           "SELECT token FROM pro_tokens WHERE bound_device_id = ? AND is_active = 1"
         ).bind(clientId).first();
@@ -44,7 +29,6 @@ export default {
           return Response.json({ isPro: true, remaining: 999 }, { headers: corsHeaders });
         }
 
-        // Check daily quota
         let usage = await env.DB.prepare(
           "SELECT * FROM user_usage WHERE client_id = ?"
         ).bind(clientId).first();
