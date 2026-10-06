@@ -6,6 +6,7 @@ export default {
       request.headers.get("cf-connecting-ip") || "anonymous";
     const userAgent =
       request.headers.get("user-agent") || "unknown";
+
     const clientId = btoa(clientIp + userAgent).substring(0, 32);
 
     const corsHeaders = {
@@ -18,7 +19,23 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
+    // =====================================================
+    // HEALTH CHECK
+    // =====================================================
+    if (url.pathname === "/api/health") {
+      return Response.json(
+        {
+          status: "ok",
+          dbConfigured: !!env.DB,
+          geminiConfigured: !!env.GEMINI_API_KEY,
+        },
+        { headers: corsHeaders }
+      );
+    }
+
+    // =====================================================
     // CHECK QUOTA
+    // =====================================================
     if (
       url.pathname === "/api/check-quota" &&
       request.method === "GET"
@@ -26,24 +43,15 @@ export default {
       try {
         const today = new Date().toISOString().split("T")[0];
 
-        const tokenCheck = await env.DB.prepare(
-          "SELECT token FROM pro_tokens WHERE bound_device_id = ? AND is_active = 1"
-        ).bind(clientId).first();
-
-        if (tokenCheck) {
-          return Response.json(
-            { isPro: true, remaining: 999 },
-            { headers: corsHeaders }
-          );
-        }
-
         const usage = await env.DB.prepare(
-          "SELECT * FROM user_usage WHERE client_id = ?"
-        ).bind(clientId).first();
+          "SELECT usage_count, last_date FROM user_usage WHERE client_id = ?"
+        )
+          .bind(clientId)
+          .first();
 
         const count =
           usage && usage.last_date === today
-            ? usage.usage_count
+            ? Number(usage.usage_count || 0)
             : 0;
 
         return Response.json(
@@ -55,18 +63,39 @@ export default {
         );
       } catch (err) {
         return Response.json(
-          { error: err.message },
-          { status: 500, headers: corsHeaders }
+          {
+            success: false,
+            error: err.message,
+          },
+          {
+            status: 500,
+            headers: corsHeaders,
+          }
         );
       }
     }
 
+    // =====================================================
     // GENERATE AI
+    // =====================================================
     if (
       url.pathname === "/api/generate" &&
       request.method === "POST"
     ) {
       try {
+        if (!env.GEMINI_API_KEY) {
+          return Response.json(
+            {
+              success: false,
+              error: "GEMINI_API_KEY belum terpasang di Cloudflare.",
+            },
+            {
+              status: 500,
+              headers: corsHeaders,
+            }
+          );
+        }
+
         const body = await request.json();
 
         const title = body.title || "Konten";
@@ -74,23 +103,71 @@ export default {
         const audience = body.audience || "";
         const goal = body.goal || "";
 
+        // -----------------------------------------------
+        // CEK QUOTA
+        // -----------------------------------------------
+
+        const today = new Date().toISOString().split("T")[0];
+
+        const usage = await env.DB.prepare(
+          "SELECT usage_count, last_date FROM user_usage WHERE client_id = ?"
+        )
+          .bind(clientId)
+          .first();
+
+        let count =
+          usage && usage.last_date === today
+            ? Number(usage.usage_count || 0)
+            : 0;
+
+        if (count >= 5) {
+          return Response.json(
+            {
+              success: false,
+              error: "Quota harian sudah habis.",
+              remaining: 0,
+            },
+            {
+              status: 429,
+              headers: corsHeaders,
+            }
+          );
+        }
+
+        // -----------------------------------------------
+        // PROMPT
+        // -----------------------------------------------
+
         const prompt = `
-Buatkan script video pendek dan visual prompt.
+Buatkan konten video pendek berdasarkan data berikut.
 
-Judul: "${title}"
-Niche: "${niche}"
-Audiens: "${audience}"
-Tujuan: "${goal}"
+Judul: ${title}
+Niche: ${niche}
+Audiens: ${audience}
+Tujuan: ${goal}
 
-Buat hasil yang jelas, praktis dan siap digunakan.
+Berikan hasil dalam format:
+
+SCRIPT:
+Tulis script video pendek yang siap digunakan.
+
+VISUAL:
+Tulis visual prompt yang sesuai untuk video vertical 9:16.
+
+Buat singkat, jelas, menarik dan praktis.
 `;
 
+        // -----------------------------------------------
+        // GEMINI
+        // -----------------------------------------------
+
         const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${env.GEMINI_API_KEY}`,
+          "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
           {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
+              "x-goog-api-key": env.GEMINI_API_KEY,
             },
             body: JSON.stringify({
               contents: [
@@ -108,48 +185,118 @@ Buat hasil yang jelas, praktis dan siap digunakan.
 
         const geminiData = await geminiRes.json();
 
+        if (!geminiRes.ok) {
+          return Response.json(
+            {
+              success: false,
+              error:
+                geminiData?.error?.message ||
+                "Gemini API gagal.",
+              status: geminiRes.status,
+            },
+            {
+              status: 502,
+              headers: corsHeaders,
+            }
+          );
+        }
+
         const result =
-          geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
+          geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
 
         if (!result) {
           return Response.json(
             {
               success: false,
-              error:
-                geminiData.error?.message ||
-                "Gemini tidak menghasilkan data.",
+              error: "Gemini tidak mengembalikan hasil.",
             },
-            { status: 500, headers: corsHeaders }
+            {
+              status: 502,
+              headers: corsHeaders,
+            }
           );
         }
 
-        // SIMPAN HASIL GENERATE
-        const contentData = {
-          title,
-          niche,
-          audience,
-          goal,
-          result,
-          clientId,
-        };
+        // -----------------------------------------------
+        // PISAH SCRIPT DAN VISUAL
+        // -----------------------------------------------
 
-        await env.DB.prepare(
-          "INSERT INTO saved_content (title, content, created_at) VALUES (?, ?, ?)"
+        let script = result;
+        let visual = "";
+
+        const visualIndex = result
+          .toUpperCase()
+          .indexOf("VISUAL:");
+
+        if (visualIndex !== -1) {
+          script = result.substring(0, visualIndex).trim();
+          visual = result.substring(visualIndex + 7).trim();
+        }
+
+        // -----------------------------------------------
+        // SIMPAN KE TABLE CONTENTS
+        // -----------------------------------------------
+
+        const now = Date.now();
+
+        const insertResult = await env.DB.prepare(
+          `INSERT INTO contents
+          (title, niche, audience, goal, script, visual, stage, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             title,
-            JSON.stringify(contentData),
-            new Date().toISOString()
+            niche,
+            audience,
+            goal,
+            script,
+            visual,
+            "IDE",
+            now,
+            now
           )
           .run();
+
+        // -----------------------------------------------
+        // UPDATE QUOTA
+        // -----------------------------------------------
+
+        if (usage && usage.last_date === today) {
+          await env.DB.prepare(
+            `UPDATE user_usage
+             SET usage_count = usage_count + 1
+             WHERE client_id = ?`
+          )
+            .bind(clientId)
+            .run();
+        } else {
+          await env.DB.prepare(
+            `INSERT INTO user_usage
+             (client_id, usage_count, last_date)
+             VALUES (?, 1, ?)
+             ON CONFLICT(client_id)
+             DO UPDATE SET
+               usage_count = 1,
+               last_date = excluded.last_date`
+          )
+            .bind(clientId, today)
+            .run();
+        }
 
         return Response.json(
           {
             success: true,
             saved: true,
+            id: insertResult.meta?.last_row_id || null,
             result,
+            script,
+            visual,
+            stage: "IDE",
+            remaining: Math.max(0, 5 - count - 1),
           },
-          { headers: corsHeaders }
+          {
+            headers: corsHeaders,
+          }
         );
       } catch (err) {
         return Response.json(
@@ -157,24 +304,44 @@ Buat hasil yang jelas, praktis dan siap digunakan.
             success: false,
             error: err.message,
           },
-          { status: 500, headers: corsHeaders }
+          {
+            status: 500,
+            headers: corsHeaders,
+          }
         );
       }
     }
 
-    // AMBIL DATA ANTREAN
+    // =====================================================
+    // QUEUE / ANTREAN
+    // =====================================================
     if (
       url.pathname === "/api/queue" &&
       request.method === "GET"
     ) {
       try {
         const result = await env.DB.prepare(
-          "SELECT * FROM saved_content ORDER BY created_at DESC LIMIT 100"
+          `SELECT
+            id,
+            title,
+            niche,
+            audience,
+            goal,
+            script,
+            visual,
+            stage,
+            created_at,
+            updated_at
+           FROM contents
+           ORDER BY created_at DESC
+           LIMIT 100`
         ).all();
 
         return Response.json(
           result.results || [],
-          { headers: corsHeaders }
+          {
+            headers: corsHeaders,
+          }
         );
       } catch (err) {
         return Response.json(
@@ -182,12 +349,17 @@ Buat hasil yang jelas, praktis dan siap digunakan.
             success: false,
             error: err.message,
           },
-          { status: 500, headers: corsHeaders }
+          {
+            status: 500,
+            headers: corsHeaders,
+          }
         );
       }
     }
 
-    // SIMPAN MANUAL
+    // =====================================================
+    // SAVE MANUAL
+    // =====================================================
     if (
       url.pathname === "/api/save" &&
       request.method === "POST"
@@ -195,22 +367,35 @@ Buat hasil yang jelas, praktis dan siap digunakan.
       try {
         const body = await request.json();
 
-        await env.DB.prepare(
-          "INSERT INTO saved_content (title, content, created_at) VALUES (?, ?, ?)"
+        const now = Date.now();
+
+        const result = await env.DB.prepare(
+          `INSERT INTO contents
+          (title, niche, audience, goal, script, visual, stage, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             body.title || "Konten",
-            JSON.stringify(body),
-            new Date().toISOString()
+            body.niche || "",
+            body.audience || "",
+            body.goal || "",
+            body.script || body.content || "",
+            body.visual || "",
+            body.stage || "IDE",
+            now,
+            now
           )
           .run();
 
         return Response.json(
           {
             success: true,
+            id: result.meta?.last_row_id || null,
             message: "Berhasil disimpan",
           },
-          { headers: corsHeaders }
+          {
+            headers: corsHeaders,
+          }
         );
       } catch (err) {
         return Response.json(
@@ -218,7 +403,10 @@ Buat hasil yang jelas, praktis dan siap digunakan.
             success: false,
             error: err.message,
           },
-          { status: 500, headers: corsHeaders }
+          {
+            status: 500,
+            headers: corsHeaders,
+          }
         );
       }
     }
