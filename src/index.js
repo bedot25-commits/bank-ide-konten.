@@ -1,8 +1,11 @@
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const url = new URL(request.url);
+    const clientIp = request.headers.get("cf-connecting-ip") || "anonymous";
+    const userAgent = request.headers.get("user-agent") || "unknown";
+    const clientId = btoa(clientIp + userAgent).substring(0, 32); // Unique Device ID
 
-    // CORS headers
+    // CORS Headers
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -13,123 +16,147 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // 1. ENDPOINT: GET /api/contents (Mengambil antrean konten)
-    if (url.pathname === "/api/contents" && request.method === "GET") {
+    // 1. CHECK QUOTA & PRO STATUS
+    if (url.pathname === "/api/check-quota" && request.method === "GET") {
       try {
-        const { results } = await env.DB.prepare(
-          "SELECT * FROM contents ORDER BY updated_at DESC"
-        ).all();
-        return Response.json(results, { headers: corsHeaders });
+        const today = new Date().toISOString().split('T')[0];
+        
+        // Check if device has active pro token bound
+        const tokenCheck = await env.DB.prepare(
+          "SELECT token FROM pro_tokens WHERE bound_device_id = ? AND is_active = 1"
+        ).bind(clientId).first();
+
+        if (tokenCheck) {
+          return Response.json({ isPro: true, remaining: 999 }, { headers: corsHeaders });
+        }
+
+        // Check daily quota
+        let usage = await env.DB.prepare(
+          "SELECT * FROM user_usage WHERE client_id = ?"
+        ).bind(clientId).first();
+
+        let count = 0;
+        if (usage) {
+          if (usage.last_date === today) {
+            count = usage.usage_count;
+          } else {
+            // Reset for new day
+            await env.DB.prepare(
+              "UPDATE user_usage SET usage_count = 0, last_date = ? WHERE client_id = ?"
+            ).bind(today, clientId).run();
+            count = 0;
+          }
+        }
+
+        return Response.json({ isPro: false, remaining: Math.max(0, 5 - count) }, { headers: corsHeaders });
       } catch (err) {
         return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
       }
     }
 
-    // 2. ENDPOINT: POST /api/generate (Generate AI + Sistem Kuota 5x / Hari + Token Pro)
-    if (url.pathname === "/api/generate" && request.method === "POST") {
+    // 2. ACTIVATE PRO TOKEN (ANTI-SHARING / DEVICE BINDING)
+    if (url.pathname === "/api/activate-token" && request.method === "POST") {
       try {
-        const body = await request.json();
-        const { title, niche, audience, goal, clientId, proToken } = body;
-
-        // Cek apakah menggunakan Token Pro yang valid
-        let isPro = false;
-        if (proToken) {
-          const tokenCheck = await env.DB.prepare(
-            "SELECT * FROM pro_tokens WHERE token = ? AND is_active = 1"
-          ).bind(proToken).first();
-          if (tokenCheck) {
-            isPro = true;
-          }
+        const { token } = await request.json();
+        if (!token) {
+          return Response.json({ success: false, message: "Token tidak boleh kosong!" }, { headers: corsHeaders });
         }
 
-        // Jika bukan Pro, jalankan sistem kuota harian (5x / hari)
-        const todayStr = new Date().toISOString().split('T')[0];
-        if (!isPro) {
-          if (!clientId) {
-            return Response.json({ error: "Client ID tidak ditemukan." }, { status: 400, headers: corsHeaders });
-          }
+        // Find token in database
+        const tokenData = await env.DB.prepare(
+          "SELECT * FROM pro_tokens WHERE token = ? AND is_active = 1"
+        ).bind(token.trim()).first();
 
-          // Cek data usage client ini
+        if (!tokenData) {
+          return Response.json({ success: false, message: "Token tidak valid atau tidak aktif!" }, { headers: corsHeaders });
+        }
+
+        // Check if token is already bound to another device
+        if (tokenData.bound_device_id && tokenData.bound_device_id !== clientId) {
+          return Response.json({ success: false, message: "Token sudah digunakan di perangkat lain!" }, { headers: corsHeaders });
+        }
+
+        // Bind token to this device if not bound yet
+        if (!tokenData.bound_device_id) {
+          await env.DB.prepare(
+            "UPDATE pro_tokens SET bound_device_id = ? WHERE token = ?"
+          ).bind(clientId, token.trim()).run();
+        }
+
+        return Response.json({ success: true, message: "Token Pro berhasil diaktifkan!" }, { headers: corsHeaders });
+      } catch (err) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // 3. GENERATE CONTENT (AI GEMINI)
+    if (url.pathname === "/api/generate" && request.method === "POST") {
+      try {
+        const today = new Date().toISOString().split('T')[0];
+
+        // Verify Pro status
+        const tokenCheck = await env.DB.prepare(
+          "SELECT token FROM pro_tokens WHERE bound_device_id = ? AND is_active = 1"
+        ).bind(clientId).first();
+
+        if (!tokenCheck) {
+          // Check quota limit (max 5)
           let usage = await env.DB.prepare(
             "SELECT * FROM user_usage WHERE client_id = ?"
           ).bind(clientId).first();
 
-          if (!usage) {
-            // Belum ada, buat baru
-            await env.DB.prepare(
-              "INSERT INTO user_usage (client_id, usage_count, last_date) VALUES (?, 0, ?)"
-            ).bind(clientId, todayStr).run();
-            usage = { usage_count: 0, last_date: todayStr };
-          }
-
-          // Jika sudah ganti hari, reset hitungan jadi 0
-          if (usage.last_date !== todayStr) {
-            await env.DB.prepare(
-              "UPDATE user_usage SET usage_count = 0, last_date = ? WHERE client_id = ?"
-            ).bind(todayStr, clientId).run();
-            usage.usage_count = 0;
-          }
-
-          // Batasi maksimal 5 kali sehari
-          if (usage.usage_count >= 5) {
-            return Response.json({ 
-              error: "QUOTA_EXCEEDED", 
-              message: "Jatah 5 ide gratis hari ini sudah habis! Masukkan Token Pro atau tunggu besok." 
-            }, { status: 429, headers: corsHeaders });
+          let count = 0;
+          if (usage) {
+            if (usage.last_date === today) {
+              count = usage.usage_count;
+              if (count >= 5) {
+                return Response.json({ error: "Kuota harian habis! Masukkan Token Pro untuk akses tanpa batas." }, { status: 403, headers: corsHeaders });
+              }
+            } else {
+              await env.DB.prepare(
+                "UPDATE user_usage SET usage_count = 0, last_date = ? WHERE client_id = ?"
+              ).bind(today, clientId).run();
+            }
           }
         }
 
-        // Panggil Gemini API untuk generate script & visual prompt
-        const geminiApiKey = env.GEMINI_API_KEY;
-        if (!geminiApiKey) {
-          return Response.json({ error: "Gemini API key belum diset di Cloudflare Worker." }, { status: 500, headers: corsHeaders });
-        }
+        const body = await request.json();
+        const prompt = `Buatkan script video pendek dan visual prompt untuk judul: "${body.title}", niche: "${body.niche}", audiens: "${body.audience}", tujuan: "${body.goal}". Format dengan jelas bagian Script dan Visual Prompt.`;
 
-        const promptText = `Buatkan draf script video pendek (TikTok/Reels) dan visual prompt berdasarkan data berikut:
-Judul/Topik: ${title}
-Niche: ${niche}
-Target Audiens: ${audience}
-Tujuan Konten: ${goal}
-
-Format output JSON murni tanpa markdown lain:
-{
-  "script": "isi naskah video...",
-  "visual": "deskripsi visual prompt..."
-}`;
-
-        const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`, {
+        // Call Gemini API
+        const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${env.GEMINI_API_KEY}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: promptText }] }]
-          })
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
         });
 
         const geminiData = await geminiRes.json();
-        const rawText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-        
-        // Bersihkan format markdown json jika ada
-        const cleanJsonStr = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
-        let parsedResult;
-        try {
-          parsedResult = JSON.parse(cleanJsonStr);
-        } catch (e) {
-          parsedResult = { script: rawText, visual: "Gagal parsing format visual." };
+        const textResult = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "Gagal menghasilkan konten.";
+
+        // Increment quota if not pro
+        if (!tokenCheck) {
+          let usage = await env.DB.prepare(
+            "SELECT * FROM user_usage WHERE client_id = ?"
+          ).bind(clientId).first();
+
+          if (usage) {
+            if (usage.last_date === today) {
+              await env.DB.prepare(
+                "UPDATE user_usage SET usage_count = usage_count + 1 WHERE client_id = ?"
+              ).bind(clientId).run();
+            } else {
+              await env.DB.prepare(
+                "UPDATE user_usage SET usage_count = 1, last_date = ? WHERE client_id = ?"
+              ).bind(today, clientId).run();
+            }
+          } else {
+            await env.DB.prepare(
+              "INSERT INTO user_usage (client_id, usage_count, last_date) VALUES (?, 1, ?)"
+            ).bind(clientId, today).run();
+          }
         }
 
-        // Jika bukan Pro, tambahkan kuota pemakaian harian setelah sukses generate
-        if (!isPro && clientId) {
-          await env.DB.prepare(
-            "UPDATE user_usage SET usage_count = usage_count + 1 WHERE client_id = ?"
-          ).bind(clientId).run();
-        }
-
-        return Response.json({
-          script: parsedResult.script,
-          visual: parsedResult.visual,
-          isPro: isPro
-        }, { headers: corsHeaders });
-
+        return Response.json({ result: textResult }, { headers: corsHeaders });
       } catch (err) {
         return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
       }
