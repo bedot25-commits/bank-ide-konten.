@@ -1,174 +1,674 @@
 document.addEventListener("DOMContentLoaded", () => {
-  // Generate atau Ambil Client ID unik untuk perangkat ini
+  // =========================
+  // CLIENT ID
+  // =========================
   let clientId = localStorage.getItem("bank_client_id");
+
   if (!clientId) {
-    clientId = "client_" + Math.random().toString(36).substring(2, 15);
+    clientId =
+      "client_" +
+      Math.random().toString(36).substring(2, 15);
+
     localStorage.setItem("bank_client_id", clientId);
   }
 
-  // Cek apakah sudah ada token Pro yang tersimpan di browser
-  let savedToken = localStorage.getItem("pro_token") || "";
+  // =========================
+  // PRO TOKEN
+  // =========================
+  const savedToken =
+    localStorage.getItem("pro_token") || "";
 
-  // Tambahkan elemen UI status kuota & input token Pro secara otomatis di bawah header/atas card
+  // =========================
+  // ELEMENTS
+  // =========================
   const mainEl = document.querySelector("main");
-  if (mainEl && !document.getElementById("pro-section")) {
-    const proDiv = document.createElement("div");
+
+  const scriptBtn =
+    document.getElementById("scriptBtn");
+
+  const refreshBtn =
+    document.getElementById("refresh");
+
+  const titleInput =
+    document.getElementById("title");
+
+  const nicheInput =
+    document.getElementById("niche");
+
+  const audienceInput =
+    document.getElementById("audience");
+
+  const goalInput =
+    document.getElementById("goal");
+
+  const scriptArea =
+    document.getElementById("script");
+
+  const visualArea =
+    document.getElementById("visual");
+
+  const msgDiv =
+    document.getElementById("msg");
+
+  const saveBtn =
+    document.getElementById("save");
+
+  const listDiv =
+    document.getElementById("list");
+
+  // =========================
+  // PRO + QUOTA UI
+  // =========================
+  if (
+    mainEl &&
+    !document.getElementById("pro-section")
+  ) {
+    const proDiv =
+      document.createElement("div");
+
     proDiv.id = "pro-section";
-    proDiv.style.cssText = "background: #111; color: #fff; padding: 10px; border-radius: 8px; margin-bottom: 15px; font-size: 14px;";
+
+    proDiv.style.cssText = `
+      background:#111;
+      color:#fff;
+      padding:12px;
+      border-radius:10px;
+      margin-bottom:15px;
+      font-size:13px;
+    `;
+
     proDiv.innerHTML = `
-      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-        <span id="quota-status">Memuat status kuota...</span>
+      <div style="
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        flex-wrap:wrap;
+        gap:10px;
+      ">
         <div>
-          <input type="text" id="tokenInput" placeholder="Masukkan Token Pro" value="${savedToken}" style="padding: 5px; border-radius: 4px; border: 1px solid #444; background: #222; color: #fff; font-size: 12px;">
-          <button id="saveTokenBtn" style="padding: 5px 10px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Aktivasi</button>
+          <div id="quota-status">
+            Memuat status kuota...
+          </div>
+        </div>
+
+        <div style="
+          display:flex;
+          gap:6px;
+          flex-wrap:wrap;
+        ">
+          <input
+            type="text"
+            id="tokenInput"
+            placeholder="Token Pro"
+            value="${savedToken}"
+            style="
+              padding:7px;
+              border-radius:5px;
+              border:1px solid #444;
+              background:#222;
+              color:#fff;
+              font-size:12px;
+            "
+          >
+
+          <button
+            id="saveTokenBtn"
+            style="
+              padding:7px 10px;
+              background:#28a745;
+              color:#fff;
+              border:none;
+              border-radius:5px;
+              font-size:12px;
+            "
+          >
+            Aktivasi
+          </button>
         </div>
       </div>
     `;
-    mainEl.insertBefore(proDiv, mainEl.firstChild);
 
-    document.getElementById("saveTokenBtn").addEventListener("click", () => {
-      const val = document.getElementById("tokenInput").value.trim();
-      localStorage.setItem("pro_token", val);
-      alert(val ? "Token Pro disimpan!" : "Token Pro dikosongkan.");
-      location.reload();
-    });
-  }
+    mainEl.insertBefore(
+      proDiv,
+      mainEl.firstChild
+    );
 
-  const scriptBtn = document.getElementById("scriptBtn");
-  const titleInput = document.getElementById("title");
-  const nicheInput = document.getElementById("niche");
-  const audienceInput = document.getElementById("audience");
-  const goalInput = document.getElementById("goal");
-  const scriptArea = document.getElementById("script");
-  const visualArea = document.getElementById("visual");
-  const msgDiv = document.getElementById("msg");
-  const saveBtn = document.getElementById("save");
-  const listDiv = document.getElementById("list");
+    const saveTokenBtn =
+      document.getElementById(
+        "saveTokenBtn"
+      );
 
-  // Fungsi Load Queue Online
-  async function loadQueue() {
-    try {
-      const res = await fetch("/api/contents");
-      const data = await res.json();
-      if (Array.isArray(data)) {
-        if (data.length === 0) {
-          listDiv.innerHTML = "<p style='color: #888;'>Belum ada konten di database.</p>";
-          return;
+    if (saveTokenBtn) {
+      saveTokenBtn.addEventListener(
+        "click",
+        () => {
+          const input =
+            document.getElementById(
+              "tokenInput"
+            );
+
+          const val =
+            input
+              ? input.value.trim()
+              : "";
+
+          localStorage.setItem(
+            "pro_token",
+            val
+          );
+
+          alert(
+            val
+              ? "Token Pro disimpan!"
+              : "Token Pro dikosongkan."
+          );
+
+          location.reload();
         }
-        let html = "";
-        data.forEach(item => {
-          html += `
-            <div style="background: #1a1a1a; padding: 10px; margin-bottom: 8px; border-radius: 6px; border: 1px solid #333;">
-              <b>${item.title}</b> <small style="color: #aaa;">(${item.niche || 'General'})</small>
-              <p style="margin: 5px 0 0 0; font-size: 13px; color: #ccc;">${item.script ? item.script.substring(0, 100) + '...' : 'Tidak ada script'}</p>
-            </div>
-          `;
-        });
-        listDiv.innerHTML = html;
-      }
-    } catch (e) {
-      listDiv.innerHTML = "<p style='color: red;'>Gagal memuat antrean online.</p>";
+      );
     }
   }
 
-  loadQueue();
+  // =========================
+  // UPDATE QUOTA DISPLAY
+  // =========================
+  function updateQuotaDisplay(
+    isPro,
+    usageCount,
+    remaining
+  ) {
+    const quota =
+      document.getElementById(
+        "quota-status"
+      );
 
-  // Tombol Generate AI + Cek Kuota
-  if (scriptBtn) {
-    scriptBtn.addEventListener("click", async () => {
-      const title = titleInput ? titleInput.value.trim() : "";
-      if (!title) {
-        alert("Mohon isi Judul / Ide terlebih dahulu!");
+    if (!quota) return;
+
+    if (isPro) {
+      quota.innerHTML =
+        "✨ <b>Mode Pro Aktif</b> — Tanpa batas";
+      return;
+    }
+
+    const count =
+      Number(usageCount || 0);
+
+    const left =
+      typeof remaining === "number"
+        ? remaining
+        : Math.max(0, 5 - count);
+
+    quota.innerHTML =
+      `🎁 Gratis: <b>${left}/5</b> generate tersisa hari ini`;
+  }
+
+  // =========================
+  // LOAD QUEUE
+  // =========================
+  async function loadQueue() {
+    if (!listDiv) return;
+
+    listDiv.innerHTML =
+      "<p style='color:#888;'>Memuat antrean...</p>";
+
+    try {
+      const res =
+        await fetch(
+          "/api/contents",
+          {
+            method: "GET",
+            cache: "no-store"
+          }
+        );
+
+      if (!res.ok) {
+        throw new Error(
+          "Gagal mengambil data queue."
+        );
+      }
+
+      const data =
+        await res.json();
+
+      if (!Array.isArray(data)) {
+        throw new Error(
+          "Format data queue tidak valid."
+        );
+      }
+
+      if (data.length === 0) {
+        listDiv.innerHTML =
+          "<p style='color:#888;'>Belum ada konten di database.</p>";
         return;
       }
 
-      scriptBtn.innerText = "Generating AI...";
-      scriptBtn.disabled = true;
-      if (msgDiv) msgDiv.innerText = "";
+      let html = "";
 
-      const proToken = localStorage.getItem("pro_token") || "";
+      data.forEach((item) => {
+        const title =
+          item.title || "Tanpa Judul";
 
-      try {
-        const res = await fetch("/api/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title,
-            niche: nicheInput ? nicheInput.value : "",
-            audience: audienceInput ? audienceInput.value : "",
-            goal: goalInput ? goalInput.value : "",
-            clientId: clientId,
-            proToken: proToken
-          })
-        });
+        const niche =
+          item.niche || "General";
 
-        const data = await res.json();
+        const script =
+          item.script || "Tidak ada script";
 
-        if (res.status === 429 || data.error === "QUOTA_EXCEEDED") {
-          alert("Jatah 5 ide gratis hari ini sudah habis! Masukkan Token Pro dari Lynk.id atau tunggu sampai besok.");
-          if (msgDiv) msgDiv.innerText = data.message || "Kuota h habis.";
-          scriptBtn.innerText = "Generate Script & Visual";
-          scriptBtn.disabled = false;
+        const visual =
+          item.visual || "Tidak ada visual prompt";
+
+        const stage =
+          item.stage || "IDE";
+
+        html += `
+          <div style="
+            background:#1a1a1a;
+            padding:12px;
+            margin-bottom:10px;
+            border-radius:8px;
+            border:1px solid #333;
+          ">
+
+            <div style="
+              display:flex;
+              justify-content:space-between;
+              gap:8px;
+              align-items:center;
+            ">
+              <b>${escapeHTML(title)}</b>
+
+              <small style="
+                color:#aaa;
+                background:#27272a;
+                padding:4px 7px;
+                border-radius:20px;
+              ">
+                ${escapeHTML(stage)}
+              </small>
+            </div>
+
+            <small style="
+              color:#aaa;
+              display:block;
+              margin-top:5px;
+            ">
+              ${escapeHTML(niche)}
+            </small>
+
+            <div style="
+              background:#0c0c0f;
+              border:1px solid #333;
+              border-radius:7px;
+              padding:9px;
+              margin-top:9px;
+            ">
+              <strong style="font-size:11px;">
+                SCRIPT
+              </strong>
+
+              <p style="
+                white-space:pre-wrap;
+                color:#ccc;
+                font-size:12px;
+                line-height:1.5;
+                margin:6px 0;
+              ">
+                ${escapeHTML(script)}
+              </p>
+            </div>
+
+            <div style="
+              background:#0c0c0f;
+              border:1px solid #333;
+              border-radius:7px;
+              padding:9px;
+              margin-top:8px;
+            ">
+              <strong style="font-size:11px;">
+                VISUAL PROMPT
+              </strong>
+
+              <p style="
+                white-space:pre-wrap;
+                color:#ccc;
+                font-size:12px;
+                line-height:1.5;
+                margin:6px 0;
+              ">
+                ${escapeHTML(visual)}
+              </p>
+            </div>
+
+          </div>
+        `;
+      });
+
+      listDiv.innerHTML = html;
+
+    } catch (error) {
+      console.error(
+        "QUEUE ERROR:",
+        error
+      );
+
+      listDiv.innerHTML =
+        `
+        <p style="color:#f87171;">
+          Gagal memuat antrean online.
+          Silakan tekan REFRESH lagi.
+        </p>
+        `;
+    }
+  }
+
+  // =========================
+  // ESCAPE HTML
+  // =========================
+  function escapeHTML(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  // =========================
+  // INITIAL QUEUE LOAD
+  // =========================
+  loadQueue();
+
+  // =========================
+  // REFRESH BUTTON
+  // =========================
+  if (refreshBtn) {
+    refreshBtn.addEventListener(
+      "click",
+      async () => {
+        refreshBtn.innerText =
+          "MEMUAT...";
+
+        refreshBtn.disabled = true;
+
+        try {
+          await loadQueue();
+        } finally {
+          refreshBtn.innerText =
+            "REFRESH";
+
+          refreshBtn.disabled = false;
+        }
+      }
+    );
+  }
+
+  // =========================
+  // GENERATE AI
+  // =========================
+  if (scriptBtn) {
+    scriptBtn.addEventListener(
+      "click",
+      async () => {
+        const title =
+          titleInput
+            ? titleInput.value.trim()
+            : "";
+
+        if (!title) {
+          alert(
+            "Mohon isi Judul / Ide terlebih dahulu!"
+          );
           return;
         }
 
-        if (!res.ok) {
-          throw new Error(data.error || "Terjadi kesalahan pada server.");
+        scriptBtn.innerText =
+          "Generating AI...";
+
+        scriptBtn.disabled = true;
+
+        if (msgDiv) {
+          msgDiv.innerText =
+            "AI sedang membuat script dan visual...";
         }
 
-        if (scriptArea) scriptArea.value = data.script || "";
-        if (visualArea) visualArea.value = data.visual || "";
-        if (msgDiv) msgDiv.innerText = data.isPro ? "✨ Mode Pro Aktif (Tanpa Batas)" : "✅ Berhasil generate (Sisa kuota terpotong)";
+        const proToken =
+          localStorage.getItem(
+            "pro_token"
+          ) || "";
 
-      } catch (err) {
-        alert("Error: " + err.message);
-      } finally {
-        scriptBtn.innerText = "Generate Script & Visual";
-        scriptBtn.disabled = false;
+        try {
+          const response =
+            await fetch(
+              "/api/generate",
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type":
+                    "application/json"
+                },
+                body: JSON.stringify({
+                  title,
+                  niche:
+                    nicheInput
+                      ? nicheInput.value
+                      : "",
+                  audience:
+                    audienceInput
+                      ? audienceInput.value
+                      : "",
+                  goal:
+                    goalInput
+                      ? goalInput.value
+                      : "",
+                  clientId,
+                  proToken
+                })
+              }
+            );
+
+          const data =
+            await response.json();
+
+          if (
+            response.status === 429 ||
+            data.error ===
+              "QUOTA_EXCEEDED"
+          ) {
+            alert(
+              "Jatah 5 ide gratis hari ini sudah habis! Masukkan Token Pro atau tunggu sampai besok."
+            );
+
+            if (msgDiv) {
+              msgDiv.innerText =
+                data.message ||
+                "Kuota habis.";
+            }
+
+            updateQuotaDisplay(
+              false,
+              data.usageCount,
+              0
+            );
+
+            return;
+          }
+
+          if (!response.ok) {
+            throw new Error(
+              data.message ||
+              data.error ||
+              "Terjadi kesalahan pada server."
+            );
+          }
+
+          if (scriptArea) {
+            scriptArea.value =
+              data.script || "";
+          }
+
+          if (visualArea) {
+            visualArea.value =
+              data.visual || "";
+          }
+
+          updateQuotaDisplay(
+            data.isPro,
+            data.usageCount,
+            data.remaining
+          );
+
+          if (msgDiv) {
+            msgDiv.innerText =
+              data.isPro
+                ? "✨ Mode Pro Aktif — Tanpa batas"
+                : `✅ Berhasil generate — sisa ${data.remaining} generate hari ini`;
+          }
+
+        } catch (error) {
+          console.error(
+            "GENERATE ERROR:",
+            error
+          );
+
+          alert(
+            "Error: " +
+              error.message
+          );
+
+          if (msgDiv) {
+            msgDiv.innerText =
+              "Gagal generate AI.";
+          }
+
+        } finally {
+          scriptBtn.innerText =
+            "GENERATE SCRIPT";
+
+          scriptBtn.disabled =
+            false;
+        }
       }
-    });
+    );
   }
 
-  // Tombol Simpan ke Database D1
+  // =========================
+  // SAVE TO DATABASE
+  // =========================
   if (saveBtn) {
-    saveBtn.addEventListener("click", async () => {
-      const title = titleInput ? titleInput.value.trim() : "";
-      const script = scriptArea ? scriptArea.value.trim() : "";
-      const visual = visualArea ? visualArea.value.trim() : "";
+    saveBtn.addEventListener(
+      "click",
+      async () => {
+        const title =
+          titleInput
+            ? titleInput.value.trim()
+            : "";
 
-      if (!title) {
-        alert("Judul belum diisi!");
-        return;
-      }
+        const script =
+          scriptArea
+            ? scriptArea.value.trim()
+            : "";
 
-      saveBtn.innerText = "Menyimpan...";
-      try {
-        const res = await fetch("/api/contents", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title,
-            niche: nicheInput ? nicheInput.value : "",
-            audience: audienceInput ? audienceInput.value : "",
-            goal: goalInput ? goalInput.value : "",
-            script,
-            visual
-          })
-        });
-        if (res.ok) {
-          alert("Berhasil disimpan ke database online!");
-          titleInput.value = "";
-          if(scriptArea) scriptArea.value = "";
-          if(visualArea) visualArea.value = "";
-          loadQueue();
-        } else {
-          alert("Gagal menyimpan data.");
+        const visual =
+          visualArea
+            ? visualArea.value.trim()
+            : "";
+
+        if (!title) {
+          alert(
+            "Judul belum diisi!"
+          );
+          return;
         }
-      } catch (e) {
-        alert("Error simpan: " + e.message);
-      } finally {
-        saveBtn.innerText = "☁️ SIMPAN KE DATABASE";
+
+        saveBtn.innerText =
+          "MENYIMPAN...";
+
+        saveBtn.disabled = true;
+
+        try {
+          const response =
+            await fetch(
+              "/api/contents",
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type":
+                    "application/json"
+                },
+                body: JSON.stringify({
+                  title,
+                  niche:
+                    nicheInput
+                      ? nicheInput.value
+                      : "",
+                  audience:
+                    audienceInput
+                      ? audienceInput.value
+                      : "",
+                  goal:
+                    goalInput
+                      ? goalInput.value
+                      : "",
+                  script,
+                  visual
+                })
+              }
+            );
+
+          const data =
+            await response.json();
+
+          if (!response.ok) {
+            throw new Error(
+              data.message ||
+              data.error ||
+              "Gagal menyimpan data."
+            );
+          }
+
+          alert(
+            "Berhasil disimpan ke database online!"
+          );
+
+          if (titleInput) {
+            titleInput.value = "";
+          }
+
+          if (scriptArea) {
+            scriptArea.value = "";
+          }
+
+          if (visualArea) {
+            visualArea.value = "";
+          }
+
+          if (msgDiv) {
+            msgDiv.innerText =
+              "☁️ Konten berhasil disimpan.";
+          }
+
+          // Langsung refresh queue
+          await loadQueue();
+
+        } catch (error) {
+          console.error(
+            "SAVE ERROR:",
+            error
+          );
+
+          alert(
+            "Gagal menyimpan: " +
+              error.message
+          );
+
+        } finally {
+          saveBtn.innerText =
+            "☁️ SIMPAN KE DATABASE";
+
+          saveBtn.disabled =
+            false;
+        }
       }
-    });
+    );
   }
 });
