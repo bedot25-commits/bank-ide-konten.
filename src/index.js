@@ -1,648 +1,553 @@
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Content-Type": "application/json; charset=UTF-8",
+};
+
+const FREE_LIMIT = 5;
+const GEMINI_MODEL = "gemini-2.5-flash";
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: CORS,
+  });
+}
+
+async function getProStatus(env, proToken) {
+  if (!proToken) {
+    return {
+      isPro: false,
+      token: "",
+    };
+  }
+
+  const row = await env.DB.prepare(
+    `SELECT token, is_active
+     FROM pro_tokens
+     WHERE token = ?
+     LIMIT 1`
+  ).bind(proToken).first();
+
+  if (row && Number(row.is_active) === 1) {
+    return {
+      isPro: true,
+      token: row.token,
+    };
+  }
+
+  return {
+    isPro: false,
+    token: "",
+  };
+}
+
+async function getUsage(env, clientId) {
+  const today = new Date().toISOString().slice(0, 10);
+
+  let row = await env.DB.prepare(
+    `SELECT client_id, usage_count, last_date
+     FROM user_usage
+     WHERE client_id = ?
+     LIMIT 1`
+  ).bind(clientId).first();
+
+  if (!row) {
+    await env.DB.prepare(
+      `INSERT INTO user_usage (client_id, usage_count, last_date)
+       VALUES (?, 0, ?)`
+    ).bind(clientId, today).run();
+
+    return {
+      count: 0,
+      remaining: FREE_LIMIT,
+      today,
+    };
+  }
+
+  if (row.last_date !== today) {
+    await env.DB.prepare(
+      `UPDATE user_usage
+       SET usage_count = 0, last_date = ?
+       WHERE client_id = ?`
+    ).bind(today, clientId).run();
+
+    return {
+      count: 0,
+      remaining: FREE_LIMIT,
+      today,
+    };
+  }
+
+  const count = Number(row.usage_count || 0);
+
+  return {
+    count,
+    remaining: Math.max(0, FREE_LIMIT - count),
+    today,
+  };
+}
+
+async function consumeUsage(env, clientId) {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const existing = await env.DB.prepare(
+    `SELECT usage_count, last_date
+     FROM user_usage
+     WHERE client_id = ?
+     LIMIT 1`
+  ).bind(clientId).first();
+
+  if (!existing) {
+    await env.DB.prepare(
+      `INSERT INTO user_usage (client_id, usage_count, last_date)
+       VALUES (?, 1, ?)`
+    ).bind(clientId, today).run();
+
+    return 1;
+  }
+
+  if (existing.last_date !== today) {
+    await env.DB.prepare(
+      `UPDATE user_usage
+       SET usage_count = 1, last_date = ?
+       WHERE client_id = ?`
+    ).bind(today, clientId).run();
+
+    return 1;
+  }
+
+  const nextCount = Number(existing.usage_count || 0) + 1;
+
+  await env.DB.prepare(
+    `UPDATE user_usage
+     SET usage_count = ?, last_date = ?
+     WHERE client_id = ?`
+  ).bind(nextCount, today, clientId).run();
+
+  return nextCount;
+}
+
+function extractGeminiText(data) {
+  return (
+    data?.candidates?.[0]?.content?.parts
+      ?.map((p) => p.text || "")
+      .join("")
+      .trim() || ""
+  );
+}
+
+function parseAIResult(text) {
+  if (!text) {
+    return {
+      script: "",
+      visual: "",
+    };
+  }
+
+  // Bersihkan markdown code fence bila Gemini mengirim ```json ... ```
+  let cleaned = text
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  try {
+    const parsed = JSON.parse(cleaned);
+
+    return {
+      script: parsed.script || "",
+      visual: parsed.visual || "",
+    };
+  } catch (_) {
+    // Fallback kalau Gemini tidak mengikuti JSON
+    return {
+      script: cleaned,
+      visual: "",
+    };
+  }
+}
+
+async function generateWithGemini(env, input) {
+  if (!env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY belum terpasang di Cloudflare Worker.");
+  }
+
+  const prompt = `
+Kamu adalah AI Content Factory untuk bank.ide.konten.
+
+Buat konten video pendek berdasarkan data berikut:
+
+Judul/Ide: ${input.title}
+Niche: ${input.niche || "Umum"}
+Target Audiens: ${input.audience || "Umum"}
+Tujuan: ${input.goal || "Edukasi"}
+
+Tugas:
+
+1. Buat SCRIPT video pendek yang padat, natural, mudah dibawakan creator Indonesia.
+2. Buat VISUAL PROMPT untuk video vertikal 9:16.
+3. Fokus pada hook kuat di awal, value cepat, dan CTA yang relevan.
+4. Jangan membuat penjelasan tambahan di luar hasil.
+5. Jawaban WAJIB JSON valid dengan format:
+
+{
+  "script": "isi script lengkap",
+  "visual": "isi visual prompt lengkap"
+}
+
+Jangan gunakan markdown code block.
+`;
+
+  const endpoint =
+    `https://generativelanguage.googleapis.com/v1beta/models/` +
+    `${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [
+            {
+              text: prompt,
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.8,
+        responseMimeType: "application/json",
+      },
+    }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    const message =
+      data?.error?.message ||
+      `Gemini API error (${response.status})`;
+
+    throw new Error(message);
+  }
+
+  const text = extractGeminiText(data);
+
+  if (!text) {
+    throw new Error("Gemini tidak mengembalikan hasil.");
+  }
+
+  return parseAIResult(text);
+}
+
+async function handleGenerate(request, env) {
+  let body;
+
+  try {
+    body = await request.json();
+  } catch (_) {
+    return json(
+      {
+        error: "INVALID_JSON",
+        message: "Data request tidak valid.",
+      },
+      400
+    );
+  }
+
+  const title = String(body.title || "").trim();
+  const niche = String(body.niche || "").trim();
+  const audience = String(body.audience || "").trim();
+  const goal = String(body.goal || "").trim();
+  const clientId = String(body.clientId || "").trim();
+  const proToken = String(body.proToken || "").trim();
+
+  if (!title) {
+    return json(
+      {
+        error: "TITLE_REQUIRED",
+        message: "Judul / ide wajib diisi.",
+      },
+      400
+    );
+  }
+
+  if (!clientId) {
+    return json(
+      {
+        error: "CLIENT_ID_REQUIRED",
+        message: "Client ID tidak ditemukan.",
+      },
+      400
+    );
+  }
+
+  try {
+    const pro = await getProStatus(env, proToken);
+
+    let usage = {
+      count: 0,
+      remaining: "unlimited",
+    };
+
+    if (!pro.isPro) {
+      usage = await getUsage(env, clientId);
+
+      if (usage.count >= FREE_LIMIT) {
+        return json(
+          {
+            error: "QUOTA_EXCEEDED",
+            message:
+              "Jatah 5 ide gratis hari ini sudah habis! Masukkan Token Pro atau tunggu sampai besok.",
+            isPro: false,
+            usageCount: usage.count,
+            remaining: 0,
+          },
+          429
+        );
+      }
+    }
+
+    const result = await generateWithGemini(env, {
+      title,
+      niche,
+      audience,
+      goal,
+    });
+
+    // Kuota hanya dipotong setelah Gemini berhasil.
+    if (!pro.isPro) {
+      const newCount = await consumeUsage(env, clientId);
+
+      usage = {
+        count: newCount,
+        remaining: Math.max(0, FREE_LIMIT - newCount),
+      };
+    }
+
+    return json({
+      success: true,
+      script: result.script,
+      visual: result.visual,
+      isPro: pro.isPro,
+      usageCount: pro.isPro ? null : usage.count,
+      remaining: pro.isPro ? "unlimited" : usage.remaining,
+    });
+  } catch (error) {
+    return json(
+      {
+        error: "GEMINI_ERROR",
+        message: error?.message || "Gagal mendapatkan respons AI.",
+      },
+      500
+    );
+  }
+}
+
+async function handleContents(request, env) {
+  if (request.method === "GET") {
+    const result = await env.DB.prepare(
+      `SELECT
+        id,
+        title,
+        niche,
+        audience,
+        goal,
+        script,
+        visual,
+        stage,
+        created_at,
+        updated_at
+       FROM contents
+       ORDER BY id DESC`
+    ).all();
+
+    // app.js membutuhkan ARRAY langsung.
+    return json(result.results || []);
+  }
+
+  if (request.method === "POST") {
+    let body;
+
+    try {
+      body = await request.json();
+    } catch (_) {
+      return json(
+        {
+          error: "INVALID_JSON",
+          message: "Data tidak valid.",
+        },
+        400
+      );
+    }
+
+    const title = String(body.title || "").trim();
+    const niche = String(body.niche || "").trim();
+    const audience = String(body.audience || "").trim();
+    const goal = String(body.goal || "").trim();
+    const script = String(body.script || "");
+    const visual = String(body.visual || "");
+
+    if (!title) {
+      return json(
+        {
+          error: "TITLE_REQUIRED",
+          message: "Judul wajib diisi.",
+        },
+        400
+      );
+    }
+
+    const now = Date.now();
+
+    const result = await env.DB.prepare(
+      `INSERT INTO contents
+       (title, niche, audience, goal, script, visual, stage, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'IDE', ?, ?)`
+    )
+      .bind(
+        title,
+        niche,
+        audience,
+        goal,
+        script,
+        visual,
+        now,
+        now
+      )
+      .run();
+
+    return json({
+      success: true,
+      id: result.meta?.last_row_id || null,
+      message: "Berhasil disimpan ke database online.",
+    });
+  }
+
+  return json(
+    {
+      error: "METHOD_NOT_ALLOWED",
+    },
+    405
+  );
+}
+
+async function handleHealth(env) {
+  let db = false;
+
+  try {
+    await env.DB.prepare("SELECT 1").first();
+    db = true;
+  } catch (_) {}
+
+  return json({
+    status: "ok",
+    worker: "bank-ide-konten-v91",
+    databaseConfigured: !!env.DB,
+    databaseOnline: db,
+    geminiConfigured: !!env.GEMINI_API_KEY,
+    model: GEMINI_MODEL,
+  });
+}
+
+async function handleTestGemini(env) {
+  if (!env.GEMINI_API_KEY) {
+    return json(
+      {
+        success: false,
+        error: "GEMINI_API_KEY belum terpasang.",
+      },
+      500
+    );
+  }
+
+  try {
+    const result = await generateWithGemini(env, {
+      title: "Tes koneksi Gemini",
+      niche: "Content Creator",
+      audience: "Creator Indonesia",
+      goal: "Edukasi",
+    });
+
+    return json({
+      success: true,
+      model: GEMINI_MODEL,
+      script: result.script,
+      visual: result.visual,
+    });
+  } catch (error) {
+    return json(
+      {
+        success: false,
+        error: error?.message || "Gemini test gagal.",
+      },
+      500
+    );
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    };
-
     if (request.method === "OPTIONS") {
       return new Response(null, {
-        headers: corsHeaders,
+        status: 204,
+        headers: CORS,
       });
     }
 
-    // =====================================================
-    // HELPER
-    // =====================================================
+    try {
+      // =========================
+      // API ROUTES
+      // =========================
 
-    function json(data, status = 200) {
-      return Response.json(data, {
-        status,
-        headers: corsHeaders,
-      });
-    }
-
-    function getClientId(request) {
-      const ip =
-        request.headers.get("cf-connecting-ip") || "anonymous";
-
-      const ua =
-        request.headers.get("user-agent") || "unknown";
-
-      return btoa(ip + ua).substring(0, 32);
-    }
-
-    // =====================================================
-    // HEALTH
-    // =====================================================
-
-    if (url.pathname === "/api/health") {
-      return json({
-        status: "ok",
-        worker: "bank-ide-konten-v91",
-        dbConfigured: !!env.DB,
-        geminiConfigured: !!env.GEMINI_API_KEY,
-      });
-    }
-
-    // =====================================================
-    // DATABASE TEST
-    // =====================================================
-
-    if (
-      url.pathname === "/api/test-db" &&
-      request.method === "GET"
-    ) {
-      try {
-        if (!env.DB) {
-          return json(
-            {
-              success: false,
-              error: "D1 binding DB belum tersedia.",
-            },
-            500
-          );
-        }
-
-        const result = await env.DB
-          .prepare("SELECT 1 AS test")
-          .first();
-
-        return json({
-          success: true,
-          database: "connected",
-          result,
-        });
-      } catch (err) {
-        return json(
-          {
-            success: false,
-            error: err?.message || String(err),
-          },
-          500
-        );
+      if (url.pathname === "/api/health") {
+        return await handleHealth(env);
       }
-    }
 
-    // =====================================================
-    // TEST GEMINI
-    // =====================================================
-
-    if (
-      url.pathname === "/api/test-gemini" &&
-      request.method === "GET"
-    ) {
-      try {
-        if (!env.GEMINI_API_KEY) {
-          return json(
-            {
-              success: false,
-              step: "SECRET",
-              error:
-                "GEMINI_API_KEY tidak tersedia di Worker.",
-            },
-            500
-          );
-        }
-
-        const model = "gemini-2.5-flash";
-
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-goog-api-key": env.GEMINI_API_KEY,
-            },
-            body: JSON.stringify({
-              contents: [
-                {
-                  parts: [
-                    {
-                      text: "Jawab hanya dengan: GEMINI AKTIF",
-                    },
-                  ],
-                },
-              ],
-            }),
-          }
-        );
-
-        const geminiData = await geminiRes.json();
-
-        if (!geminiRes.ok) {
-          return json(
-            {
-              success: false,
-              step: "GEMINI_API",
-              status: geminiRes.status,
-              error:
-                geminiData?.error?.message ||
-                "Gemini API gagal.",
-            },
-            502
-          );
-        }
-
-        const result =
-          geminiData?.candidates?.[0]?.content?.parts?.[0]
-            ?.text || "";
-
-        return json({
-          success: true,
-          step: "GEMINI_API",
-          model,
-          result,
-        });
-      } catch (err) {
-        return json(
-          {
-            success: false,
-            step: "WORKER",
-            error: err?.message || String(err),
-          },
-          500
-        );
+      if (url.pathname === "/api/test-gemini") {
+        return await handleTestGemini(env);
       }
-    }
 
-    // =====================================================
-    // CHECK QUOTA
-    // =====================================================
-
-    if (
-      url.pathname === "/api/check-quota" &&
-      request.method === "GET"
-    ) {
-      try {
-        if (!env.DB) {
-          return json(
-            {
-              success: false,
-              error: "D1 belum terhubung.",
-            },
-            500
-          );
-        }
-
-        const clientId = getClientId(request);
-
-        const today = new Date()
-          .toISOString()
-          .split("T")[0];
-
-        const usage = await env.DB
-          .prepare(
-            `SELECT usage_count, last_date
-             FROM user_usage
-             WHERE client_id = ?`
-          )
-          .bind(clientId)
-          .first();
-
-        const count =
-          usage && usage.last_date === today
-            ? Number(usage.usage_count || 0)
-            : 0;
-
-        return json({
-          success: true,
-          isPro: false,
-          remaining: Math.max(0, 5 - count),
-        });
-      } catch (err) {
-        return json(
-          {
-            success: false,
-            error: err?.message || String(err),
-          },
-          500
-        );
+      if (
+        url.pathname === "/api/generate" &&
+        request.method === "POST"
+      ) {
+        return await handleGenerate(request, env);
       }
-    }
 
-    // =====================================================
-    // GENERATE AI
-    // =====================================================
-
-    if (
-      url.pathname === "/api/generate" &&
-      request.method === "POST"
-    ) {
-      try {
-        if (!env.GEMINI_API_KEY) {
-          return json(
-            {
-              success: false,
-              error:
-                "GEMINI_API_KEY belum tersedia di Worker.",
-            },
-            500
-          );
-        }
-
-        if (!env.DB) {
-          return json(
-            {
-              success: false,
-              error: "D1 binding DB belum tersedia.",
-            },
-            500
-          );
-        }
-
-        const body = await request.json();
-
-        const title = body.title || "Konten";
-        const niche = body.niche || "";
-        const audience = body.audience || "";
-        const goal = body.goal || "";
-
-        const clientId = getClientId(request);
-
-        const today = new Date()
-          .toISOString()
-          .split("T")[0];
-
-        // -------------------------------------------------
-        // CEK QUOTA
-        // -------------------------------------------------
-
-        const usage = await env.DB
-          .prepare(
-            `SELECT usage_count, last_date
-             FROM user_usage
-             WHERE client_id = ?`
-          )
-          .bind(clientId)
-          .first();
-
-        const count =
-          usage && usage.last_date === today
-            ? Number(usage.usage_count || 0)
-            : 0;
-
-        if (count >= 5) {
-          return json(
-            {
-              success: false,
-              error: "Quota harian sudah habis.",
-              remaining: 0,
-            },
-            429
-          );
-        }
-
-        // -------------------------------------------------
-        // PROMPT
-        // -------------------------------------------------
-
-        const prompt = `
-Kamu adalah content strategist dan copywriter.
-
-Buatkan konten video pendek berdasarkan:
-
-Judul: ${title}
-Niche: ${niche}
-Target audiens: ${audience}
-Tujuan: ${goal}
-
-Format jawaban:
-
-SCRIPT:
-Buat script video pendek yang siap direkam.
-Gunakan bahasa Indonesia yang natural.
-Buat hook kuat di awal.
-Padat dan mudah dipahami.
-
-VISUAL:
-Buat visual prompt untuk video vertical 9:16.
-Jelaskan subjek, lokasi, aksi, kamera dan suasana.
-
-Jangan memberikan penjelasan tambahan di luar SCRIPT dan VISUAL.
-`;
-
-        // -------------------------------------------------
-        // GEMINI
-        // -------------------------------------------------
-
-        const model = "gemini-2.5-flash";
-
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-goog-api-key": env.GEMINI_API_KEY,
-            },
-            body: JSON.stringify({
-              contents: [
-                {
-                  parts: [
-                    {
-                      text: prompt,
-                    },
-                  ],
-                },
-              ],
-            }),
-          }
-        );
-
-        const geminiData = await geminiRes.json();
-
-        // -------------------------------------------------
-        // ERROR GEMINI DITAMPILKAN JELAS
-        // -------------------------------------------------
-
-        if (!geminiRes.ok) {
-          return json(
-            {
-              success: false,
-              step: "GEMINI_API",
-              status: geminiRes.status,
-              error:
-                geminiData?.error?.message ||
-                "Gemini API gagal.",
-            },
-            502
-          );
-        }
-
-        const result =
-          geminiData?.candidates?.[0]?.content?.parts?.[0]
-            ?.text;
-
-        if (!result) {
-          return json(
-            {
-              success: false,
-              step: "GEMINI_RESPONSE",
-              error:
-                "Gemini tidak mengembalikan teks.",
-            },
-            502
-          );
-        }
-
-        // -------------------------------------------------
-        // PISAH SCRIPT DAN VISUAL
-        // -------------------------------------------------
-
-        let script = result.trim();
-        let visual = "";
-
-        const visualIndex = result
-          .toUpperCase()
-          .indexOf("VISUAL:");
-
-        if (visualIndex !== -1) {
-          script = result
-            .substring(0, visualIndex)
-            .trim();
-
-          visual = result
-            .substring(visualIndex + 7)
-            .trim();
-        }
-
-        // -------------------------------------------------
-        // SIMPAN KE CONTENTS
-        // -------------------------------------------------
-
-        const now = Date.now();
-
-        const insertResult = await env.DB
-          .prepare(
-            `INSERT INTO contents
-            (
-              title,
-              niche,
-              audience,
-              goal,
-              script,
-              visual,
-              stage,
-              created_at,
-              updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          )
-          .bind(
-            title,
-            niche,
-            audience,
-            goal,
-            script,
-            visual,
-            "IDE",
-            now,
-            now
-          )
-          .run();
-
-        // -------------------------------------------------
-        // UPDATE QUOTA
-        // -------------------------------------------------
-
-        if (
-          usage &&
-          usage.last_date === today
-        ) {
-          await env.DB
-            .prepare(
-              `UPDATE user_usage
-               SET usage_count = usage_count + 1
-               WHERE client_id = ?`
-            )
-            .bind(clientId)
-            .run();
-        } else {
-          await env.DB
-            .prepare(
-              `INSERT INTO user_usage
-              (client_id, usage_count, last_date)
-              VALUES (?, 1, ?)
-              ON CONFLICT(client_id)
-              DO UPDATE SET
-                usage_count = 1,
-                last_date = excluded.last_date`
-            )
-            .bind(clientId, today)
-            .run();
-        }
-
-        return json({
-          success: true,
-          saved: true,
-          id:
-            insertResult?.meta?.last_row_id ||
-            null,
-          result,
-          script,
-          visual,
-          stage: "IDE",
-          remaining: Math.max(
-            0,
-            5 - count - 1
-          ),
-        });
-      } catch (err) {
-        return json(
-          {
-            success: false,
-            step: "GENERATE",
-            error:
-              err?.message || String(err),
-          },
-          500
-        );
+      if (url.pathname === "/api/contents") {
+        return await handleContents(request, env);
       }
-    }
 
-    // =====================================================
-    // QUEUE
-    // =====================================================
+      // =========================
+      // STATIC ASSETS
+      // =========================
 
-    if (
-      url.pathname === "/api/queue" &&
-      request.method === "GET"
-    ) {
-      try {
-        if (!env.DB) {
-          return json(
-            {
-              success: false,
-              error: "D1 belum terhubung.",
-            },
-            500
-          );
-        }
-
-        const result = await env.DB
-          .prepare(
-            `SELECT
-              id,
-              title,
-              niche,
-              audience,
-              goal,
-              script,
-              visual,
-              stage,
-              created_at,
-              updated_at
-             FROM contents
-             ORDER BY created_at DESC
-             LIMIT 100`
-          )
-          .all();
-
-        return json({
-          success: true,
-          data: result.results || [],
-        });
-      } catch (err) {
-        return json(
-          {
-            success: false,
-            error:
-              err?.message || String(err),
-          },
-          500
-        );
+      if (env.ASSETS) {
+        return env.ASSETS.fetch(request);
       }
-    }
 
-    // =====================================================
-    // SAVE MANUAL
-    // =====================================================
-
-    if (
-      url.pathname === "/api/save" &&
-      request.method === "POST"
-    ) {
-      try {
-        if (!env.DB) {
-          return json(
-            {
-              success: false,
-              error: "D1 belum terhubung.",
-            },
-            500
-          );
-        }
-
-        const body = await request.json();
-
-        const now = Date.now();
-
-        const result = await env.DB
-          .prepare(
-            `INSERT INTO contents
-            (
-              title,
-              niche,
-              audience,
-              goal,
-              script,
-              visual,
-              stage,
-              created_at,
-              updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          )
-          .bind(
-            body.title || "Konten",
-            body.niche || "",
-            body.audience || "",
-            body.goal || "",
-            body.script ||
-              body.content ||
-              "",
-            body.visual || "",
-            body.stage || "IDE",
-            now,
-            now
-          )
-          .run();
-
-        return json({
-          success: true,
-          id:
-            result?.meta?.last_row_id ||
-            null,
-          message: "Berhasil disimpan",
-        });
-      } catch (err) {
-        return json(
-          {
-            success: false,
-            step: "SAVE",
-            error:
-              err?.message || String(err),
-          },
-          500
-        );
-      }
-    }
-
-    // =====================================================
-    // 404
-    // =====================================================
-
-    return new Response(
-      "WORKER V9.1 AKTIF",
-      {
+      return new Response("WORKER V9.1 AKTIF", {
         status: 200,
-        headers: corsHeaders,
-      }
-    );
+        headers: {
+          "Content-Type": "text/plain; charset=UTF-8",
+        },
+      });
+    } catch (error) {
+      return json(
+        {
+          error: "WORKER_ERROR",
+          message: error?.message || "Internal Worker Error",
+        },
+        500
+      );
+    }
   },
 };
