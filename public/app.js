@@ -1,7 +1,8 @@
 document.addEventListener("DOMContentLoaded", () => {
-  // =========================
+  // =========================================================
   // CLIENT ID
-  // =========================
+  // =========================================================
+
   let clientId = localStorage.getItem("bank_client_id");
 
   if (!clientId) {
@@ -12,19 +13,24 @@ document.addEventListener("DOMContentLoaded", () => {
     localStorage.setItem("bank_client_id", clientId);
   }
 
-  // =========================
+  // =========================================================
   // PRO TOKEN
-  // =========================
+  // =========================================================
+
   const savedToken =
     localStorage.getItem("pro_token") || "";
 
-  // =========================
-  // ELEMENTS
-  // =========================
+  // =========================================================
+  // ELEMENT
+  // =========================================================
+
   const mainEl = document.querySelector("main");
 
   const scriptBtn =
     document.getElementById("scriptBtn");
+
+  const visualBtn =
+    document.getElementById("visualBtn");
 
   const refreshBtn =
     document.getElementById("refresh");
@@ -56,9 +62,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const listDiv =
     document.getElementById("list");
 
-  // =========================
-  // PRO + QUOTA UI
-  // =========================
+  // =========================================================
+  // PRO SECTION
+  // =========================================================
+
   if (
     mainEl &&
     !document.getElementById("pro-section")
@@ -85,6 +92,7 @@ document.addEventListener("DOMContentLoaded", () => {
         flex-wrap:wrap;
         gap:10px;
       ">
+
         <div>
           <div id="quota-status">
             Memuat status kuota...
@@ -96,11 +104,12 @@ document.addEventListener("DOMContentLoaded", () => {
           gap:6px;
           flex-wrap:wrap;
         ">
+
           <input
             type="text"
             id="tokenInput"
             placeholder="Token Pro"
-            value="${savedToken}"
+            value="${escapeHTML(savedToken)}"
             style="
               padding:7px;
               border-radius:5px;
@@ -124,6 +133,7 @@ document.addEventListener("DOMContentLoaded", () => {
           >
             Aktivasi
           </button>
+
         </div>
       </div>
     `;
@@ -169,9 +179,23 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // =========================
-  // UPDATE QUOTA DISPLAY
-  // =========================
+  // =========================================================
+  // ESCAPE HTML
+  // =========================================================
+
+  function escapeHTML(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  // =========================================================
+  // QUOTA DISPLAY
+  // =========================================================
+
   function updateQuotaDisplay(
     isPro,
     usageCount,
@@ -187,6 +211,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (isPro) {
       quota.innerHTML =
         "✨ <b>Mode Pro Aktif</b> — Tanpa batas";
+
       return;
     }
 
@@ -196,15 +221,19 @@ document.addEventListener("DOMContentLoaded", () => {
     const left =
       typeof remaining === "number"
         ? remaining
-        : Math.max(0, 5 - count);
+        : Math.max(
+            0,
+            5 - count
+          );
 
     quota.innerHTML =
       `🎁 Gratis: <b>${left}/5</b> generate tersisa hari ini`;
   }
 
-  // =========================
+  // =========================================================
   // LOAD QUEUE
-  // =========================
+  // =========================================================
+
   async function loadQueue() {
     if (!listDiv) return;
 
@@ -212,7 +241,7 @@ document.addEventListener("DOMContentLoaded", () => {
       "<p style='color:#888;'>Memuat antrean...</p>";
 
     try {
-      const res =
+      const response =
         await fetch(
           "/api/contents",
           {
@@ -221,14 +250,14 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         );
 
-      if (!res.ok) {
+      if (!response.ok) {
         throw new Error(
           "Gagal mengambil data queue."
         );
       }
 
       const data =
-        await res.json();
+        await response.json();
 
       if (!Array.isArray(data)) {
         throw new Error(
@@ -239,6 +268,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (data.length === 0) {
         listDiv.innerHTML =
           "<p style='color:#888;'>Belum ada konten di database.</p>";
+
         return;
       }
 
@@ -246,19 +276,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
       data.forEach((item) => {
         const title =
-          item.title || "Tanpa Judul";
+          item.title ||
+          "Tanpa Judul";
 
         const niche =
-          item.niche || "General";
+          item.niche ||
+          "General";
 
         const script =
-          item.script || "Tidak ada script";
+          item.script ||
+          "Tidak ada script";
 
         const visual =
-          item.visual || "Tidak ada visual prompt";
+          item.visual ||
+          "Tidak ada visual prompt";
 
         const stage =
-          item.stage || "IDE";
+          item.stage ||
+          "IDE";
 
         html += `
           <div style="
@@ -275,7 +310,10 @@ document.addEventListener("DOMContentLoaded", () => {
               gap:8px;
               align-items:center;
             ">
-              <b>${escapeHTML(title)}</b>
+
+              <b>
+                ${escapeHTML(title)}
+              </b>
 
               <small style="
                 color:#aaa;
@@ -285,6 +323,7 @@ document.addEventListener("DOMContentLoaded", () => {
               ">
                 ${escapeHTML(stage)}
               </small>
+
             </div>
 
             <small style="
@@ -302,7 +341,10 @@ document.addEventListener("DOMContentLoaded", () => {
               padding:9px;
               margin-top:9px;
             ">
-              <strong style="font-size:11px;">
+
+              <strong style="
+                font-size:11px;
+              ">
                 SCRIPT
               </strong>
 
@@ -315,6 +357,7 @@ document.addEventListener("DOMContentLoaded", () => {
               ">
                 ${escapeHTML(script)}
               </p>
+
             </div>
 
             <div style="
@@ -324,7 +367,10 @@ document.addEventListener("DOMContentLoaded", () => {
               padding:9px;
               margin-top:8px;
             ">
-              <strong style="font-size:11px;">
+
+              <strong style="
+                font-size:11px;
+              ">
                 VISUAL PROMPT
               </strong>
 
@@ -337,6 +383,7 @@ document.addEventListener("DOMContentLoaded", () => {
               ">
                 ${escapeHTML(visual)}
               </p>
+
             </div>
 
           </div>
@@ -351,36 +398,194 @@ document.addEventListener("DOMContentLoaded", () => {
         error
       );
 
-      listDiv.innerHTML =
-        `
+      listDiv.innerHTML = `
         <p style="color:#f87171;">
           Gagal memuat antrean online.
           Silakan tekan REFRESH lagi.
         </p>
-        `;
+      `;
     }
   }
 
-  // =========================
-  // ESCAPE HTML
-  // =========================
-  function escapeHTML(value) {
-    return String(value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
+  // =========================================================
+  // GENERATE AI
+  // =========================================================
+
+  async function generateAI() {
+    const title =
+      titleInput
+        ? titleInput.value.trim()
+        : "";
+
+    if (!title) {
+      alert(
+        "Mohon isi Judul / Ide terlebih dahulu!"
+      );
+
+      return null;
+    }
+
+    const proToken =
+      localStorage.getItem(
+        "pro_token"
+      ) || "";
+
+    try {
+      if (msgDiv) {
+        msgDiv.innerText =
+          "🤖 AI sedang membuat Script + Visual...";
+      }
+
+      const response =
+        await fetch(
+          "/api/generate",
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json"
+            },
+
+            body: JSON.stringify({
+              title,
+
+              niche:
+                nicheInput
+                  ? nicheInput.value
+                  : "",
+
+              audience:
+                audienceInput
+                  ? audienceInput.value
+                  : "",
+
+              goal:
+                goalInput
+                  ? goalInput.value
+                  : "",
+
+              clientId,
+
+              proToken
+            })
+          }
+        );
+
+      const data =
+        await response.json();
+
+      // =====================================================
+      // QUOTA HABIS
+      // =====================================================
+
+      if (
+        response.status === 429 ||
+        data.error ===
+          "QUOTA_EXCEEDED"
+      ) {
+        alert(
+          "Jatah 5 ide gratis hari ini sudah habis! Masukkan Token Pro atau tunggu sampai besok."
+        );
+
+        if (msgDiv) {
+          msgDiv.innerText =
+            data.message ||
+            "Kuota habis.";
+        }
+
+        updateQuotaDisplay(
+          false,
+          data.usageCount,
+          0
+        );
+
+        return null;
+      }
+
+      // =====================================================
+      // SERVER ERROR
+      // =====================================================
+
+      if (!response.ok) {
+        throw new Error(
+          data.message ||
+          data.error ||
+          "Terjadi kesalahan pada server."
+        );
+      }
+
+      // =====================================================
+      // ISI SCRIPT
+      // =====================================================
+
+      if (scriptArea) {
+        scriptArea.value =
+          data.script || "";
+      }
+
+      // =====================================================
+      // ISI VISUAL
+      // =====================================================
+
+      if (visualArea) {
+        visualArea.value =
+          data.visual || "";
+      }
+
+      // =====================================================
+      // UPDATE QUOTA
+      // =====================================================
+
+      updateQuotaDisplay(
+        data.isPro,
+        data.usageCount,
+        data.remaining
+      );
+
+      // =====================================================
+      // STATUS
+      // =====================================================
+
+      if (msgDiv) {
+        msgDiv.innerText =
+          data.isPro
+            ? "✨ Mode Pro Aktif — Tanpa batas"
+            : `✅ Berhasil generate — sisa ${data.remaining} generate hari ini`;
+      }
+
+      return data;
+
+    } catch (error) {
+      console.error(
+        "GENERATE ERROR:",
+        error
+      );
+
+      alert(
+        "Error: " +
+          error.message
+      );
+
+      if (msgDiv) {
+        msgDiv.innerText =
+          "❌ Gagal generate AI.";
+      }
+
+      return null;
+    }
   }
 
-  // =========================
-  // INITIAL QUEUE LOAD
-  // =========================
+  // =========================================================
+  // INITIAL LOAD
+  // =========================================================
+
   loadQueue();
 
-  // =========================
+  // =========================================================
   // REFRESH BUTTON
-  // =========================
+  // =========================================================
+
   if (refreshBtn) {
     refreshBtn.addEventListener(
       "click",
@@ -396,150 +601,28 @@ document.addEventListener("DOMContentLoaded", () => {
           refreshBtn.innerText =
             "REFRESH";
 
-          refreshBtn.disabled = false;
+          refreshBtn.disabled =
+            false;
         }
       }
     );
   }
 
-  // =========================
-  // GENERATE AI
-  // =========================
+  // =========================================================
+  // GENERATE SCRIPT BUTTON
+  // =========================================================
+
   if (scriptBtn) {
     scriptBtn.addEventListener(
       "click",
       async () => {
-        const title =
-          titleInput
-            ? titleInput.value.trim()
-            : "";
-
-        if (!title) {
-          alert(
-            "Mohon isi Judul / Ide terlebih dahulu!"
-          );
-          return;
-        }
-
         scriptBtn.innerText =
           "Generating AI...";
 
         scriptBtn.disabled = true;
 
-        if (msgDiv) {
-          msgDiv.innerText =
-            "AI sedang membuat script dan visual...";
-        }
-
-        const proToken =
-          localStorage.getItem(
-            "pro_token"
-          ) || "";
-
         try {
-          const response =
-            await fetch(
-              "/api/generate",
-              {
-                method: "POST",
-                headers: {
-                  "Content-Type":
-                    "application/json"
-                },
-                body: JSON.stringify({
-                  title,
-                  niche:
-                    nicheInput
-                      ? nicheInput.value
-                      : "",
-                  audience:
-                    audienceInput
-                      ? audienceInput.value
-                      : "",
-                  goal:
-                    goalInput
-                      ? goalInput.value
-                      : "",
-                  clientId,
-                  proToken
-                })
-              }
-            );
-
-          const data =
-            await response.json();
-
-          if (
-            response.status === 429 ||
-            data.error ===
-              "QUOTA_EXCEEDED"
-          ) {
-            alert(
-              "Jatah 5 ide gratis hari ini sudah habis! Masukkan Token Pro atau tunggu sampai besok."
-            );
-
-            if (msgDiv) {
-              msgDiv.innerText =
-                data.message ||
-                "Kuota habis.";
-            }
-
-            updateQuotaDisplay(
-              false,
-              data.usageCount,
-              0
-            );
-
-            return;
-          }
-
-          if (!response.ok) {
-            throw new Error(
-              data.message ||
-              data.error ||
-              "Terjadi kesalahan pada server."
-            );
-          }
-
-          if (scriptArea) {
-            scriptArea.value =
-              data.script || "";
-          }
-
-          if (visualArea) {
-            visualArea.value =
-              data.visual || "";
-          }
-
-          updateQuotaDisplay(
-            data.isPro,
-            data.usageCount,
-            data.remaining
-          );
-
-          if (msgDiv) {
-            msgDiv.innerText =
-              data.isPro
-                ? "✨ Mode Pro Aktif — Tanpa batas"
-                : `✅ Berhasil generate — sisa ${data.remaining} generate hari ini`;
-          }
-
-        } catch (error) {
-          console.error(
-            "GENERATE ERROR:",
-            error
-          );
-
-          alert(
-            "Error: " +
-              error.message
-          );
-
-          if (msgDiv) {
-            msgDiv.innerText =
-              "Gagal generate AI.";
-          }
-
+          await generateAI();
         } finally {
           scriptBtn.innerText =
             "GENERATE SCRIPT";
@@ -551,13 +634,97 @@ document.addEventListener("DOMContentLoaded", () => {
     );
   }
 
-  // =========================
+  // =========================================================
+  // GENERATE VISUAL BUTTON
+  // =========================================================
+
+  if (visualBtn) {
+    visualBtn.addEventListener(
+      "click",
+      async () => {
+
+        const title =
+          titleInput
+            ? titleInput.value.trim()
+            : "";
+
+        if (!title) {
+          alert(
+            "Mohon isi Judul / Ide terlebih dahulu!"
+          );
+
+          return;
+        }
+
+        // ---------------------------------------------------
+        // JIKA VISUAL SUDAH ADA
+        // ---------------------------------------------------
+
+        const existingVisual =
+          visualArea
+            ? visualArea.value.trim()
+            : "";
+
+        if (existingVisual) {
+          if (msgDiv) {
+            msgDiv.innerText =
+              "🎬 Visual prompt sudah tersedia.";
+          }
+
+          visualArea.focus();
+
+          return;
+        }
+
+        // ---------------------------------------------------
+        // VISUAL MASIH KOSONG
+        // ---------------------------------------------------
+
+        visualBtn.innerText =
+          "Generating Visual...";
+
+        visualBtn.disabled = true;
+
+        try {
+          const data =
+            await generateAI();
+
+          if (
+            data &&
+            data.visual &&
+            visualArea
+          ) {
+            visualArea.value =
+              data.visual;
+
+            if (msgDiv) {
+              msgDiv.innerText =
+                "🎬 Visual prompt berhasil dibuat!";
+            }
+
+            visualArea.focus();
+          }
+
+        } finally {
+          visualBtn.innerText =
+            "🎬 GENERATE VISUAL";
+
+          visualBtn.disabled =
+            false;
+        }
+      }
+    );
+  }
+
+  // =========================================================
   // SAVE TO DATABASE
-  // =========================
+  // =========================================================
+
   if (saveBtn) {
     saveBtn.addEventListener(
       "click",
       async () => {
+
         const title =
           titleInput
             ? titleInput.value.trim()
@@ -577,6 +744,7 @@ document.addEventListener("DOMContentLoaded", () => {
           alert(
             "Judul belum diisi!"
           );
+
           return;
         }
 
@@ -591,25 +759,32 @@ document.addEventListener("DOMContentLoaded", () => {
               "/api/contents",
               {
                 method: "POST",
+
                 headers: {
                   "Content-Type":
                     "application/json"
                 },
+
                 body: JSON.stringify({
                   title,
+
                   niche:
                     nicheInput
                       ? nicheInput.value
                       : "",
+
                   audience:
                     audienceInput
                       ? audienceInput.value
                       : "",
+
                   goal:
                     goalInput
                       ? goalInput.value
                       : "",
+
                   script,
+
                   visual
                 })
               }
@@ -630,8 +805,24 @@ document.addEventListener("DOMContentLoaded", () => {
             "Berhasil disimpan ke database online!"
           );
 
+          // -------------------------------------------------
+          // RESET FORM
+          // -------------------------------------------------
+
           if (titleInput) {
             titleInput.value = "";
+          }
+
+          if (nicheInput) {
+            nicheInput.value = "";
+          }
+
+          if (audienceInput) {
+            audienceInput.value = "";
+          }
+
+          if (goalInput) {
+            goalInput.value = "";
           }
 
           if (scriptArea) {
@@ -647,7 +838,10 @@ document.addEventListener("DOMContentLoaded", () => {
               "☁️ Konten berhasil disimpan.";
           }
 
-          // Langsung refresh queue
+          // -------------------------------------------------
+          // REFRESH QUEUE OTOMATIS
+          // -------------------------------------------------
+
           await loadQueue();
 
         } catch (error) {
